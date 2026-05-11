@@ -1,0 +1,114 @@
+name: 🎯 Ultimate Downloader Pro (Fix Table & Search)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: '🔄 Mode: single / search'
+        required: true
+        type: choice
+        options: ['single', 'search']
+        default: 'single'
+      url:
+        description: '🎬 URL or Search Query'
+        required: true
+        type: string
+      max_videos:
+        description: '🔢 Max results'
+        required: false
+        type: string
+        default: '10'
+
+jobs:
+  research-task:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 🛠️ Setup Environment
+        run: |
+          pip3 install -q -U yt-dlp requests
+          sudo apt-get update -qq
+
+      - name: 🚀 Core Engine
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+          QUERY: ${{ github.event.inputs.url }}
+          MAX: ${{ github.event.inputs.max_videos }}
+        run: |
+          python3 << 'PYEOF'
+          import os, json, subprocess, hashlib, requests, sys
+          from pathlib import Path
+
+          MODE, QUERY = os.environ.get('MODE'), os.environ.get('QUERY')
+          MAX = int(os.environ.get('MAX', '10'))
+          DL_DIR, IMG_DIR = Path('downloads'), Path('previews')
+          for d in [DL_DIR, IMG_DIR]: d.mkdir(exist_ok=True)
+
+          def run_dlp(args):
+              base = ['yt-dlp', '--no-check-certificate', '--no-warnings', '--user-agent', 'Mozilla/5.0']
+              return subprocess.run(base + args, capture_output=True, text=True)
+
+          def clean(text):
+              return str(text).replace('|', '-').replace('\n', ' ').strip()
+
+          def get_all_sizes(d):
+              duration = d.get('duration', 0)
+              res_map = {240: 0.012, 480: 0.05, 720: 0.15, 1080: 0.3}
+              return "<br>".join([f"{res}p: ~{int(duration * factor)}MB" for res, factor in res_map.items()])
+
+          if MODE == 'search':
+              # استفاده از متد قدیمی برای نتایج مرتبط‌تر
+              search_cmd = f"ytsearch{MAX}:{QUERY}"
+              res = run_dlp(['--dump-json', '--flat-playlist', search_cmd])
+              
+              with open('Search_Results.md', 'w', encoding='utf-8') as f:
+                  f.write(f"# 🔍 Results for: {QUERY}\n\n")
+                  f.write("| # | Preview | Date | Title | Duration | Sizes | Link |\n")
+                  f.write("|---|---|---|---|---|---|---|\n")
+                  
+                  if res.stdout:
+                      for i, line in enumerate(res.stdout.strip().split('\n'), 1):
+                          try:
+                              d = json.loads(line)
+                              vid_id = d.get('id', str(i))
+                              thumb = d.get('thumbnail')
+                              local_img = ""
+                              if thumb:
+                                  try:
+                                      r = requests.get(thumb, timeout=10)
+                                      if r.status_code == 200:
+                                          (IMG_DIR / f"{vid_id}.jpg").write_bytes(r.content)
+                                          local_img = f"previews/{vid_id}.jpg"
+                                  except: pass
+                              
+                              date = clean(d.get('upload_date', 'N/A'))
+                              if len(date) == 8: date = f"{date[:4]}-{date[4:6]}-{date[6:]}"
+                              
+                              f.write(f"| {i} | ![]({local_img}) | {date} | {clean(d.get('title'))} | {clean(d.get('duration_string'))} | {get_all_sizes(d)} | [Link]({d.get('webpage_url')}) |\n")
+                          except: continue
+          else:
+              print(f"📥 Downloading: {QUERY}")
+              f_path = DL_DIR / "video.mp4"
+              run_dlp(['-f', 'best[ext=mp4]', '-o', str(f_path), QUERY])
+              
+              if f_path.exists():
+                  size_mb = f_path.stat().st_size / (1024*1024)
+                  if size_mb > 90:
+                      subprocess.run(['split', '-b', '90M', str(f_path), str(DL_DIR / "part_")])
+                      f_path.unlink()
+                      with open(DL_DIR / "How_to_Join.txt", "w") as h:
+                          h.write("Windows: copy /b part_* video.mp4\nLinux/Mac: cat part_* > video.mp4")
+          PYEOF
+
+      - name: 📤 Push Files
+        run: |
+          git config user.name "bot"
+          git config user.email "bot@github.com"
+          git add .
+          git commit -m "📦 Sync $(date +%H%M)" || exit 0
+          git pull --rebase origin main
+          git push
