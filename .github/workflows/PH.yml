@@ -1,4 +1,4 @@
-name: 🎯 Ultimate Downloader Pro (Fix Table & Search)
+name: 🎯 Ultimate Downloader Pro (Stable & Full)
 
 on:
   workflow_dispatch:
@@ -40,33 +40,36 @@ jobs:
           MAX: ${{ github.event.inputs.max_videos }}
         run: |
           python3 << 'PYEOF'
-          import os, json, subprocess, hashlib, requests, sys
+          import os, json, subprocess, requests, hashlib
           from pathlib import Path
 
           MODE, QUERY = os.environ.get('MODE'), os.environ.get('QUERY')
           MAX = int(os.environ.get('MAX', '10'))
           DL_DIR, IMG_DIR = Path('downloads'), Path('previews')
-          for d in [DL_DIR, IMG_DIR]: d.mkdir(exist_ok=True)
+          DL_DIR.mkdir(exist_ok=True); IMG_DIR.mkdir(exist_ok=True)
 
           def run_dlp(args):
-              base = ['yt-dlp', '--no-check-certificate', '--no-warnings', '--user-agent', 'Mozilla/5.0']
-              return subprocess.run(base + args, capture_output=True, text=True)
+              # استفاده از یوزر ایجنت واقعی برای جلوگیری از بلاک شدن
+              base = ['yt-dlp', '--no-check-certificate', '--no-warnings', '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36']
+              return subprocess.run(base + args, capture_output=True, text=True, encoding='utf-8')
 
-          def clean(text):
-              return str(text).replace('|', '-').replace('\n', ' ').strip()
-
-          def get_all_sizes(d):
-              duration = d.get('duration', 0)
-              res_map = {240: 0.012, 480: 0.05, 720: 0.15, 1080: 0.3}
-              return "<br>".join([f"{res}p: ~{int(duration * factor)}MB" for res, factor in res_map.items()])
+          def get_size_estimates(duration):
+              if not duration or duration == 0: return "N/A"
+              # فاکتورهای تخمین: 240p, 480p, 720p, 1080p
+              factors = {240: 0.015, 480: 0.06, 720: 0.18, 1080: 0.35}
+              lines = [f"{res}p: ~{int(duration * f)}MB" for res, f in factors.items()]
+              return "<br>".join(lines)
 
           if MODE == 'search':
-              # استفاده از متد قدیمی برای نتایج مرتبط‌تر
-              search_cmd = f"ytsearch{MAX}:{QUERY}"
-              res = run_dlp(['--dump-json', '--flat-playlist', search_cmd])
+              print(f"🔎 Scanning for: {QUERY}")
+              # جستجوی مستقیم در سایت هدف (PH) به جای یوتیوب
+              search_url = f"https://www.pornhub.com/video/search?search={QUERY.replace(' ', '+')}"
+              
+              # استخراج دیتای کامل هر ویدیو
+              res = run_dlp(['--dump-json', '--playlist-end', str(MAX), search_url])
               
               with open('Search_Results.md', 'w', encoding='utf-8') as f:
-                  f.write(f"# 🔍 Results for: {QUERY}\n\n")
+                  f.write(f"# 🔍 Search Results for: {QUERY}\n\n")
                   f.write("| # | Preview | Date | Title | Duration | Sizes | Link |\n")
                   f.write("|---|---|---|---|---|---|---|\n")
                   
@@ -74,21 +77,28 @@ jobs:
                       for i, line in enumerate(res.stdout.strip().split('\n'), 1):
                           try:
                               d = json.loads(line)
-                              vid_id = d.get('id', str(i))
+                              v_id = d.get('id', str(i))
+                              
+                              # مدیریت تصویر (دانلود و ذخیره برای نمایش در ایران)
                               thumb = d.get('thumbnail')
                               local_img = ""
                               if thumb:
                                   try:
-                                      r = requests.get(thumb, timeout=10)
-                                      if r.status_code == 200:
-                                          (IMG_DIR / f"{vid_id}.jpg").write_bytes(r.content)
-                                          local_img = f"previews/{vid_id}.jpg"
+                                      img_req = requests.get(thumb, timeout=10)
+                                      if img_req.status_code == 200:
+                                          (IMG_DIR / f"{v_id}.jpg").write_bytes(img_req.content)
+                                          local_img = f"previews/{v_id}.jpg"
                                   except: pass
                               
-                              date = clean(d.get('upload_date', 'N/A'))
-                              if len(date) == 8: date = f"{date[:4]}-{date[4:6]}-{date[6:]}"
+                              # تمیزکاری متون برای جدول
+                              title = d.get('title', 'N/A').replace('|', '-')
+                              duration_s = d.get('duration_string', 'N/A')
+                              duration_v = d.get('duration', 0)
                               
-                              f.write(f"| {i} | ![]({local_img}) | {date} | {clean(d.get('title'))} | {clean(d.get('duration_string'))} | {get_all_sizes(d)} | [Link]({d.get('webpage_url')}) |\n")
+                              raw_date = d.get('upload_date', 'N/A')
+                              f_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}" if len(raw_date)==8 else "Recent"
+                              
+                              f.write(f"| {i} | ![]({local_img}) | {f_date} | {title} | {duration_s} | {get_size_estimates(duration_v)} | [Link]({d.get('webpage_url')}) |\n")
                           except: continue
           else:
               print(f"📥 Downloading: {QUERY}")
@@ -96,19 +106,16 @@ jobs:
               run_dlp(['-f', 'best[ext=mp4]', '-o', str(f_path), QUERY])
               
               if f_path.exists():
-                  size_mb = f_path.stat().st_size / (1024*1024)
-                  if size_mb > 90:
+                  if f_path.stat().st_size > 90 * 1024 * 1024:
                       subprocess.run(['split', '-b', '90M', str(f_path), str(DL_DIR / "part_")])
                       f_path.unlink()
-                      with open(DL_DIR / "How_to_Join.txt", "w") as h:
-                          h.write("Windows: copy /b part_* video.mp4\nLinux/Mac: cat part_* > video.mp4")
           PYEOF
 
-      - name: 📤 Push Files
+      - name: 📤 Push Update
         run: |
           git config user.name "bot"
           git config user.email "bot@github.com"
           git add .
-          git commit -m "📦 Sync $(date +%H%M)" || exit 0
+          git commit -m "📦 Full Data Sync $(date +%H%M)" || exit 0
           git pull --rebase origin main
           git push
